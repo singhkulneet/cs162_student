@@ -1,16 +1,16 @@
-CC?=gcc
-CFLAGS?=-g
+CC=i386-gcc
+CFLAGS=-g
 BINARIES=map limits
 
 default:
-	make map
-	make limits
+	$(MAKE) map
+	$(MAKE) limits
 
-map:
-	$(CC) $(CFLAGS) map.c recurse.c -o map
+map: map.c recurse.c
+	$(CC) $(CFLAGS) $^ -o $@
 
-limits:
-	$(CC) $(CFLAGS) limits.c -o limits
+limits: limits.c
+	$(CC) $(CFLAGS) $^ -o $@
 
 clean:
 	rm -f $(BINARIES)

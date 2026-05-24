@@ -25,7 +25,12 @@ Mutators take a reference to a list as first arg.
 /* Basic utililties */
 
 char *new_string(char *str) {
-  return strcpy((char *)malloc(strlen(str)+1), str);
+  if (!str) return NULL;
+  char *new_str = (char *) malloc(strlen(str) + 1);
+  if (new_str == NULL) {
+    return NULL;
+  }
+  return strcpy(new_str, str);
 }
 
 void init_words(WordCount **wclist) {
@@ -35,17 +40,47 @@ void init_words(WordCount **wclist) {
 
 size_t len_words(WordCount *wchead) {
     size_t len = 0;
+    WordCount *wc;
+    for (wc = wchead; wc; wc = wc->next) {
+      len++;
+    }
     return len;
 }
 
 WordCount *find_word(WordCount *wchead, char *word) {
   /* Return count for word, if it exists */
   WordCount *wc = NULL;
-  return wc;
+  WordCount *ret = NULL;
+  for (wc = wchead; wc; wc = wc->next) {
+    if (strcmp(word, wc->word) == 0) {
+      ret = wc;
+      break;
+    }
+  }
+  return ret;
 }
 
 void add_word(WordCount **wclist, char *word) {
   /* If word is present in word_counts list, increment the count, otw insert with count 1. */
+  if(!wclist) return;
+
+  WordCount *node = find_word(*wclist, word);
+  if (node) {
+    node->count++;
+  } else {
+    node = malloc(sizeof(WordCount));
+    if (!node) return;
+
+    node->word = new_string(word);
+    if (!node->word) {
+      free(node);
+      return;
+    }
+
+    node->count = 1;
+    node->next = *wclist;
+    *wclist = node;
+  }
 }
 
 void fprint_words(WordCount *wchead, FILE *ofile) {

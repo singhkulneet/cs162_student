@@ -29,6 +29,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #include "word_count.h"
 
@@ -45,7 +46,17 @@ WordCount *word_counts = NULL;
  * Useful functions: fgetc(), isalpha().
  */
 int num_words(FILE* infile) {
-  int num_words = 0;
+  int num_words = 0, len = 0;
+  char ch;
+  while((ch = fgetc(infile)) != EOF) {
+    if (isspace(ch)) {
+      if (len > 1) num_words++;
+      len = 0;
+    } else {
+      len++;
+    }
+  }
+  if (len > 1) num_words++;
 
   return num_words;
 }
@@ -57,6 +68,24 @@ int num_words(FILE* infile) {
  * Useful functions: fgetc(), isalpha(), tolower(), add_word().
  */
 void count_words(WordCount **wclist, FILE *infile) {
+  char word[MAX_WORD_LEN];
+  int len = 0;
+  char ch;
+  while((ch = fgetc(infile)) != EOF) {
+    if (isspace(ch)) {
+      if (len > 1) {
+        word[len] = '\0';
+        add_word(wclist, word);
+      }
+      len = 0;
+    } else if (len < MAX_WORD_LEN-1) {
+      word[len++] = tolower(ch);
+    }
+  }
+  if (len > 1) {
+    word[len] = '\0';
+    add_word(wclist, word);
+  }
 }
 
 /*
@@ -64,7 +93,11 @@ void count_words(WordCount **wclist, FILE *infile) {
  * Useful function: strcmp().
  */
 static bool wordcount_less(const WordCount *wc1, const WordCount *wc2) {
-  return 0;
+  if (wc1->count != wc2->count) {
+    return wc1->count < wc2->count;
+  } else {
+    return strcmp(wc2->word, wc1->word) > 0 ? true : false;
+  }
 }
 
 // In trying times, displays a helpful message.
@@ -89,6 +122,7 @@ int main (int argc, char *argv[]) {
   bool freq_mode = false;
 
   FILE *infile = NULL;
+  (void) infile;
 
   // Variables for command line argument parsing
   int i;
@@ -127,10 +161,27 @@ int main (int argc, char *argv[]) {
   if ((argc - optind) < 1) {
     // No input file specified, instead, read from STDIN instead.
     infile = stdin;
+    if (count_mode)
+      total_words += num_words(infile);
+    else
+      count_words(&word_counts, infile);
   } else {
     // At least one file specified. Useful functions: fopen(), fclose().
     // The first file can be found at argv[optind]. The last file can be
     // found at argv[argc-1].
+    int num_files = argc - optind;
+    for (int i=0; i<num_files; i++) {
+      char *file_path = argv[optind+i];
+      infile = fopen(file_path, "r");
+      if (!infile) {
+        printf("Error: Cant open %s due to %s\n", file_path, strerror(errno));
+        continue;
+      }
+      if (count_mode)
+        total_words += num_words(infile);
+      else
+        count_words(&word_counts, infile);
+    }
   }
 
   if (count_mode) {

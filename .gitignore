@@ -4,6 +4,10 @@
 *.obj
 *.elf
 
+# Assembly Files
+*.s
+*.asm
+
 # Precompiled Headers
 *.gch
 *.pch
@@ -33,6 +37,7 @@
 *.swp
 .vscode
 .idea
+*.txt
 
 # HW0
 hw0/limits
