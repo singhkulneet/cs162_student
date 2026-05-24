@@ -192,10 +192,22 @@ int main(unused int argc, unused char *argv[]) {
           exit(EXIT_FAILURE);
         }
 
+        char *infile = NULL;
+        char *outfile = NULL;
+        // track how many arguments actually belong to the program
+        size_t cmd_argc = 0;
         for (size_t i=0; i<num_tokens; i++) {
-          args[i] = tokens_get_token(tokens, i);
+          char *token = tokens_get_token(tokens, i);
+
+          if (strcmp(token, "<") == 0) {
+            infile = tokens_get_token(tokens, ++i);
+          } else if (strcmp(token, ">") == 0) {
+            outfile = tokens_get_token(tokens, ++i);
+          } else {
+            args[cmd_argc++] = token;
+          }
         }
-        args[num_tokens] = NULL; // Null terminating array
+        args[cmd_argc] = NULL; // Null terminating array
 
         // Fork the process
         pid_t pid = fork();
@@ -204,6 +216,31 @@ int main(unused int argc, unused char *argv[]) {
           // forking failed
           perror("fork failed");
         } else if (pid == 0) { // child process
+          // Handle Input Redirection (<)
+          if (infile != NULL) {
+            int in_fd = open(infile, O_RDONLY);
+            if (in_fd < 0) {
+              perror("Failed to open input file");
+              exit(EXIT_FAILURE);
+            }
+            // Overwrite standard input with our input file descriptor
+            dup2(in_fd, STDIN_FILENO);
+            close(in_fd); // Close original descriptor as it's no longer needed
+          }
+
+          // Handle Output Redirection (>)
+          if (outfile != NULL) {
+            // Open for writing: Create if missing, truncate if it exists. Permissions: 0644
+            int out_fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (out_fd < 0) {
+              perror("Failed to open output file");
+              exit(EXIT_FAILURE);
+            }
+            // Overwrite standard output with our output file descriptor
+            dup2(out_fd, STDOUT_FILENO);
+            close(out_fd);
+          }
+
           execv(full_path, args); // full path of program
 
           // if execv returns, it means there was an error
