@@ -10,6 +10,7 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include "tokenizer.h"
 
@@ -28,9 +29,6 @@ struct termios shell_tmodes;
 /* Process group id for the shell */
 pid_t shell_pgid;
 
-int cmd_exit(struct tokens *tokens);
-int cmd_help(struct tokens *tokens);
-
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens *tokens);
 
@@ -41,8 +39,16 @@ typedef struct fun_desc {
   char *doc;
 } fun_desc_t;
 
+/* Function Prototypes */
+int cmd_exit(struct tokens *tokens);
+int cmd_pwd(struct tokens *tokens);
+int cmd_cd(struct tokens *tokens);
+int cmd_help(struct tokens *tokens);
+
 fun_desc_t cmd_table[] = {
   {cmd_help, "?", "show this help menu"},
+  {cmd_cd, "cd", "change current working directory"},
+  {cmd_pwd, "pwd", "get current working directory"},
   {cmd_exit, "exit", "exit the command shell"},
 };
 
@@ -50,6 +56,20 @@ fun_desc_t cmd_table[] = {
 int cmd_help(unused struct tokens *tokens) {
   for (unsigned int i = 0; i < sizeof(cmd_table) / sizeof(fun_desc_t); i++)
     printf("%s - %s\n", cmd_table[i].cmd, cmd_table[i].doc);
+  return 1;
+}
+
+int cmd_pwd(unused struct tokens *tokens) {
+  char path[PATH_MAX];
+  getcwd(path, PATH_MAX);
+  printf("%s\n", path);
+  return 1;
+}
+
+int cmd_cd(struct tokens *tokens) {
+  if(chdir(tokens_get_token(tokens, 1)) != 0){
+    fprintf(stderr, "Error failed to cd: %s\n", strerror(errno));
+  }
   return 1;
 }
 
@@ -92,6 +112,47 @@ void init_shell() {
   }
 }
 
+char *resolve_path(char *cmd) {
+  if (!cmd) return NULL;
+
+  // Check if cmd already has a slash and is executable
+  if (strchr(cmd, '/') != NULL) {
+    if (access(cmd, X_OK) == 0) {
+      return strdup(cmd);
+    }
+    return NULL;
+  }
+
+  // Retrieve the PATH environment variable
+  char *path_env = getenv("PATH");
+  if (!path_env) return NULL;
+
+  // Duplicate the PATH string because strtok_r modifies the string it parses
+  char *path_cpy = strdup(path_env);
+  char *saveptr;
+  char *dir = strtok_r(path_cpy, ":", &saveptr);
+  char *resolved = NULL;
+
+  // Loop through every directory listed in PATH
+  while (dir != NULL) {
+    char potential_path[PATH_MAX];
+    
+    // Construct the full path: "directory/command"
+    snprintf(potential_path, sizeof(potential_path), "%s/%s", dir, cmd);
+
+    // Check if this constructed path exists and is executable
+    if (access(potential_path, X_OK) == 0) {
+      resolved = strdup(potential_path);
+      break; // Found it! Stop searching
+    }
+
+    dir = strtok_r(NULL, ":", &saveptr);
+  }
+
+  free(path_cpy); // Clean up our duplicate copies
+  return resolved;
+}
+
 int main(unused int argc, unused char *argv[]) {
   init_shell();
 
@@ -112,8 +173,52 @@ int main(unused int argc, unused char *argv[]) {
     if (fundex >= 0) {
       cmd_table[fundex].fun(tokens);
     } else {
-      /* REPLACE this to run commands as programs. */
-      fprintf(stdout, "This shell doesn't know how to run programs.\n");
+      size_t num_tokens = tokens_get_length(tokens);
+      if (num_tokens > 0) {
+        // Try to resolve the program path
+        char *cmd_name = tokens_get_token(tokens, 0);
+        char *full_path = resolve_path(cmd_name);
+
+        if (full_path == NULL) {
+          fprintf(stderr, "%s: command not found\n", cmd_name);
+          if (shell_is_interactive) fprintf(stdout, "%d: ", ++line_num);
+          continue; // Skip forking entirely and prompt again
+        }
+        
+        char **args = malloc((num_tokens + 1) * sizeof(char *)); // allocated argv vector
+        if (!args) {
+          perror("malloc failed");
+          free(full_path);
+          exit(EXIT_FAILURE);
+        }
+
+        for (size_t i=0; i<num_tokens; i++) {
+          args[i] = tokens_get_token(tokens, i);
+        }
+        args[num_tokens] = NULL; // Null terminating array
+
+        // Fork the process
+        pid_t pid = fork();
+
+        if (pid < 0) {
+          // forking failed
+          perror("fork failed");
+        } else if (pid == 0) { // child process
+          execv(full_path, args); // full path of program
+
+          // if execv returns, it means there was an error
+          fprintf(stderr, "%s: failed to execute program\n", args[0]);
+          free(args);
+          free(full_path);
+          exit(EXIT_FAILURE); // Stop new process from shell loop
+        } else { // parent process
+          int status;
+          // Parent block and wait for child to complete
+          waitpid(pid, &status, 0);
+        }
+        free(args); // Clean up pointer array
+        free(full_path);
+      }
     }
 
     if (shell_is_interactive)
