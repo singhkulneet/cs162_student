@@ -38,6 +38,7 @@
 .vscode
 .idea
 *.txt
+*.log
 
 # HW0
 hw0/limits

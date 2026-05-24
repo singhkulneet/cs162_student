@@ -80,7 +80,7 @@ void fprint_words(word_count_list_t *wclist, FILE *outfile) {
         e = list_next (e))
   {
     word_count_t *node = list_entry (e, word_count_t, elem);
-    fprintf(outfile, "%i\t%s\n", node->count, node->word);
+    fprintf(outfile, "%*i\t%s\n", 8, node->count, node->word);
   }
 }
 
