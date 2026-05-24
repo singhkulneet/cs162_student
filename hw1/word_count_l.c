@@ -51,6 +51,7 @@ word_count_t *find_word(word_count_list_t *wclist, char *word) {
     word_count_t *node = list_entry (e, word_count_t, elem);
     if (strcmp(word, node->word) == 0) return node;
   }
+
   return NULL;
 }
 
