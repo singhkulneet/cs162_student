@@ -136,7 +136,7 @@ char *resolve_path(char *cmd) {
   // Loop through every directory listed in PATH
   while (dir != NULL) {
     char potential_path[PATH_MAX];
-    
+
     // Construct the full path: "directory/command"
     snprintf(potential_path, sizeof(potential_path), "%s/%s", dir, cmd);
 
@@ -151,6 +151,140 @@ char *resolve_path(char *cmd) {
 
   free(path_cpy); // Clean up our duplicate copies
   return resolved;
+}
+
+/* Counts how many separate pipeline commands exist in the tokens */
+int count_pipeline_stages(struct tokens *tokens) {
+  size_t num_tokens = tokens_get_length(tokens);
+  int stages = 1;
+  for (size_t i = 0; i < num_tokens; i++) {
+    if (strcmp(tokens_get_token(tokens, i), "|") == 0) {
+      stages++;
+    }
+  }
+  return stages;
+}
+
+typedef struct cmd_stage_t {
+  char **args;       // NULL-terminated array of arguments for execv
+  char *input_file;  // NULL if no '<' redirection
+  char *output_file; // NULL if no '>' redirection
+} cmd_stage_t;
+
+cmd_stage_t parse_stage(struct tokens *tokens, size_t *token_idx) {
+  cmd_stage_t stage = { .args = NULL, .input_file = NULL, .output_file = NULL };
+  size_t num_tokens = tokens_get_length(tokens);
+
+  stage.args = malloc((num_tokens + 1) * sizeof(char *));
+  size_t cmd_argc = 0;
+
+  while (*token_idx < num_tokens) {
+    char *token = tokens_get_token(tokens, *token_idx);
+    (*token_idx)++;
+
+    if (strcmp(token, "|") == 0) {
+      break;
+    } else if (strcmp(token, "<") == 0) {
+      stage.input_file = tokens_get_token(tokens, (*token_idx)++);
+    } else if (strcmp(token, ">") == 0) {
+      stage.output_file = tokens_get_token(tokens, (*token_idx)++);
+    } else {
+      stage.args[cmd_argc++] = token;
+    }
+  }
+  stage.args[cmd_argc] = NULL;
+  return stage;
+}
+
+void execute_child_stage(cmd_stage_t *stage, int stage_idx, int num_stages, int *pipe_fds) {
+  // Handle Pipe Input (from previous stage)
+  if (stage_idx > 0) {
+    dup2(pipe_fds[2 * (stage_idx - 1)], STDIN_FILENO);
+  }
+  // Explicit file override (<)
+  if (stage->input_file) {
+    int in_fd = open(stage->input_file, O_RDONLY);
+    if (in_fd < 0) { perror("open input failed"); exit(EXIT_FAILURE); }
+    dup2(in_fd, STDIN_FILENO);
+    close(in_fd);
+  }
+
+  // Handle Pipe Output (to next stage)
+  if (stage_idx < num_stages - 1) {
+    dup2(pipe_fds[2 * stage_idx + 1], STDOUT_FILENO);
+  }
+  // Explicit file override (>)
+  if (stage->output_file) {
+    int out_fd = open(stage->output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out_fd < 0) { perror("open output failed"); exit(EXIT_FAILURE); }
+    dup2(out_fd, STDOUT_FILENO);
+    close(out_fd);
+  }
+
+  // Close ALL pipe ends in the child context
+  for (int j = 0; j < 2 * (num_stages - 1); j++) {
+    close(pipe_fds[j]);
+  }
+
+  // Resolve path and run
+  char *full_path = resolve_path(stage->args[0]);
+  if (!full_path) {
+    fprintf(stderr, "%s: command not found\n", stage->args[0]);
+    free(stage->args);
+    exit(EXIT_FAILURE);
+  }
+
+  execv(full_path, stage->args);
+  perror("execv failed");
+  free(stage->args);
+  free(full_path);
+  exit(EXIT_FAILURE);
+}
+
+void execute_pipeline(struct tokens *tokens) {
+  int num_stages = count_pipeline_stages(tokens);
+  pid_t pids[num_stages];
+  int pipe_fds[2 * (num_stages - 1)];
+
+  // Initialize all pipes
+  for (int i = 0; i < num_stages - 1; i++) {
+    if (pipe(&pipe_fds[2 * i]) < 0) {
+      perror("pipe failed");
+      return;
+    }
+  }
+
+  size_t token_idx = 0;
+  for (int i = 0; i < num_stages; i++) {
+    cmd_stage_t stage = parse_stage(tokens, &token_idx);
+
+    if (stage.args[0] == NULL) {
+      free(stage.args);
+      continue;
+    }
+
+    pids[i] = fork();
+    if (pids[i] < 0) {
+      perror("fork failed");
+      exit(EXIT_FAILURE);
+    }
+    else if (pids[i] == 0) {
+      execute_child_stage(&stage, i, num_stages, pipe_fds);
+    }
+
+    free(stage.args); // Clean up the parsed args structure in parent
+  }
+
+  // Close all pipes in parent so EOF signals propagate
+  for (int i = 0; i < 2 * (num_stages - 1); i++) {
+    close(pipe_fds[i]);
+  }
+
+  // Wait for all processes to terminate
+  for (int i = 0; i < num_stages; i++) {
+    int status;
+    waitpid(pids[i], &status, 0);
+  }
 }
 
 int main(unused int argc, unused char *argv[]) {
@@ -173,89 +307,7 @@ int main(unused int argc, unused char *argv[]) {
     if (fundex >= 0) {
       cmd_table[fundex].fun(tokens);
     } else {
-      size_t num_tokens = tokens_get_length(tokens);
-      if (num_tokens > 0) {
-        // Try to resolve the program path
-        char *cmd_name = tokens_get_token(tokens, 0);
-        char *full_path = resolve_path(cmd_name);
-
-        if (full_path == NULL) {
-          fprintf(stderr, "%s: command not found\n", cmd_name);
-          if (shell_is_interactive) fprintf(stdout, "%d: ", ++line_num);
-          continue; // Skip forking entirely and prompt again
-        }
-        
-        char **args = malloc((num_tokens + 1) * sizeof(char *)); // allocated argv vector
-        if (!args) {
-          perror("malloc failed");
-          free(full_path);
-          exit(EXIT_FAILURE);
-        }
-
-        char *infile = NULL;
-        char *outfile = NULL;
-        // track how many arguments actually belong to the program
-        size_t cmd_argc = 0;
-        for (size_t i=0; i<num_tokens; i++) {
-          char *token = tokens_get_token(tokens, i);
-
-          if (strcmp(token, "<") == 0) {
-            infile = tokens_get_token(tokens, ++i);
-          } else if (strcmp(token, ">") == 0) {
-            outfile = tokens_get_token(tokens, ++i);
-          } else {
-            args[cmd_argc++] = token;
-          }
-        }
-        args[cmd_argc] = NULL; // Null terminating array
-
-        // Fork the process
-        pid_t pid = fork();
-
-        if (pid < 0) {
-          // forking failed
-          perror("fork failed");
-        } else if (pid == 0) { // child process
-          // Handle Input Redirection (<)
-          if (infile != NULL) {
-            int in_fd = open(infile, O_RDONLY);
-            if (in_fd < 0) {
-              perror("Failed to open input file");
-              exit(EXIT_FAILURE);
-            }
-            // Overwrite standard input with our input file descriptor
-            dup2(in_fd, STDIN_FILENO);
-            close(in_fd); // Close original descriptor as it's no longer needed
-          }
-
-          // Handle Output Redirection (>)
-          if (outfile != NULL) {
-            // Open for writing: Create if missing, truncate if it exists. Permissions: 0644
-            int out_fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (out_fd < 0) {
-              perror("Failed to open output file");
-              exit(EXIT_FAILURE);
-            }
-            // Overwrite standard output with our output file descriptor
-            dup2(out_fd, STDOUT_FILENO);
-            close(out_fd);
-          }
-
-          execv(full_path, args); // full path of program
-
-          // if execv returns, it means there was an error
-          fprintf(stderr, "%s: failed to execute program\n", args[0]);
-          free(args);
-          free(full_path);
-          exit(EXIT_FAILURE); // Stop new process from shell loop
-        } else { // parent process
-          int status;
-          // Parent block and wait for child to complete
-          waitpid(pid, &status, 0);
-        }
-        free(args); // Clean up pointer array
-        free(full_path);
-      }
+      execute_pipeline(tokens);
     }
 
     if (shell_is_interactive)
