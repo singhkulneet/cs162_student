@@ -196,10 +196,15 @@ cmd_stage_t parse_stage(struct tokens *tokens, size_t *token_idx) {
   return stage;
 }
 
-void execute_child_stage(cmd_stage_t *stage, int stage_idx, int num_stages, int *pipe_fds) {
+typedef struct {
+    int read;   // Corresponds to fd[0]
+    int write;  // Corresponds to fd[1]
+} pipe_t;
+
+void execute_child_stage(cmd_stage_t *stage, int stage_idx, int num_stages, pipe_t *pipe_fds) {
   // Handle Pipe Input (from previous stage)
   if (stage_idx > 0) {
-    dup2(pipe_fds[2 * (stage_idx - 1)], STDIN_FILENO);
+    dup2(pipe_fds[stage_idx - 1].read, STDIN_FILENO);
   }
   // Explicit file override (<)
   if (stage->input_file) {
@@ -211,7 +216,7 @@ void execute_child_stage(cmd_stage_t *stage, int stage_idx, int num_stages, int 
 
   // Handle Pipe Output (to next stage)
   if (stage_idx < num_stages - 1) {
-    dup2(pipe_fds[2 * stage_idx + 1], STDOUT_FILENO);
+    dup2(pipe_fds[stage_idx].write, STDOUT_FILENO);
   }
   // Explicit file override (>)
   if (stage->output_file) {
@@ -222,8 +227,9 @@ void execute_child_stage(cmd_stage_t *stage, int stage_idx, int num_stages, int 
   }
 
   // Close ALL pipe ends in the child context
-  for (int j = 0; j < 2 * (num_stages - 1); j++) {
-    close(pipe_fds[j]);
+  for (int j = 0; j < num_stages - 1; j++) {
+    close(pipe_fds[j].read);
+    close(pipe_fds[j].write);
   }
 
   // Resolve path and run
@@ -244,11 +250,11 @@ void execute_child_stage(cmd_stage_t *stage, int stage_idx, int num_stages, int 
 void execute_pipeline(struct tokens *tokens) {
   int num_stages = count_pipeline_stages(tokens);
   pid_t pids[num_stages];
-  int pipe_fds[2 * (num_stages - 1)];
+  pipe_t pipe_fds[num_stages - 1];
 
   // Initialize all pipes
   for (int i = 0; i < num_stages - 1; i++) {
-    if (pipe(&pipe_fds[2 * i]) < 0) {
+    if (pipe((int *)&pipe_fds[i]) < 0) {
       perror("pipe failed");
       return;
     }
@@ -276,8 +282,9 @@ void execute_pipeline(struct tokens *tokens) {
   }
 
   // Close all pipes in parent so EOF signals propagate
-  for (int i = 0; i < 2 * (num_stages - 1); i++) {
-    close(pipe_fds[i]);
+  for (int i = 0; i < num_stages - 1; i++) {
+    close(pipe_fds[i].read);
+    close(pipe_fds[i].write);
   }
 
   // Wait for all processes to terminate
