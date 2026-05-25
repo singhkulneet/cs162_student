@@ -109,6 +109,17 @@ void init_shell() {
 
     /* Save the current termios to a variable, so it can be restored later. */
     tcgetattr(shell_terminal, &shell_tmodes);
+
+    // Terminal Ignores Signals
+    struct sigaction sa;
+    sa.sa_handler = SIG_IGN; // Set action to IGNORE
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGINT, &sa, NULL);  // Ignore Ctrl-C
+    sigaction(SIGTSTP, &sa, NULL); // Ignore Ctrl-Z
+    sigaction(SIGTTIN, &sa, NULL); // Ignore background terminal read
+    sigaction(SIGTTOU, &sa, NULL); // Ignore background terminal write
   }
 }
 
@@ -201,7 +212,29 @@ typedef struct {
     int write;  // Corresponds to fd[1]
 } pipe_t;
 
-void execute_child_stage(cmd_stage_t *stage, int stage_idx, int num_stages, pipe_t *pipe_fds) {
+void execute_child_stage(cmd_stage_t *stage, int stage_idx, int num_stages, pipe_t *pipe_fds, pid_t pgid) {
+  if (shell_is_interactive) {
+    /* Put the child into its designated process group */
+    pid_t current_pgid = (stage_idx == 0) ? 0 : pgid;
+    setpgid(0, current_pgid);
+
+    /* The pipeline leader claims foreground terminal access */
+    if (stage_idx == 0) {
+      tcsetpgrp(shell_terminal, getpid());
+    }
+
+    /* Reset terminal-stopping signals back to default behaviors */
+    struct sigaction sa;
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTSTP, &sa, NULL);
+    sigaction(SIGTTIN, &sa, NULL);
+    sigaction(SIGTTOU, &sa, NULL);
+  }
+  
   // Handle Pipe Input (from previous stage)
   if (stage_idx > 0) {
     dup2(pipe_fds[stage_idx - 1].read, STDIN_FILENO);
@@ -260,6 +293,8 @@ void execute_pipeline(struct tokens *tokens) {
     }
   }
 
+  // Track the process group leader (the first child's PID)
+  pid_t pgid = 0;
   size_t token_idx = 0;
   for (int i = 0; i < num_stages; i++) {
     cmd_stage_t stage = parse_stage(tokens, &token_idx);
@@ -275,7 +310,13 @@ void execute_pipeline(struct tokens *tokens) {
       exit(EXIT_FAILURE);
     }
     else if (pids[i] == 0) {
-      execute_child_stage(&stage, i, num_stages, pipe_fds);
+      execute_child_stage(&stage, i, num_stages, pipe_fds, pgid);
+    } else {
+      if (shell_is_interactive) {
+        /* Establish tracking process group inside the parent scope immediately */
+        if (i == 0) pgid = pids[0];
+        setpgid(pids[i], pgid);
+      }
     }
 
     free(stage.args); // Clean up the parsed args structure in parent
@@ -287,10 +328,16 @@ void execute_pipeline(struct tokens *tokens) {
     close(pipe_fds[i].write);
   }
 
-  // Wait for all processes to terminate
+  // Wait for all processes to terminate or suspend
   for (int i = 0; i < num_stages; i++) {
     int status;
-    waitpid(pids[i], &status, 0);
+    waitpid(pids[i], &status, WUNTRACED);
+  }
+
+  /* Reclaim terminal ownership to prompt the next instructions */
+  if (shell_is_interactive) {
+    tcsetpgrp(shell_terminal, shell_pgid);
+    tcsetattr(shell_terminal, TCSADRAIN, &shell_tmodes);
   }
 }
 
