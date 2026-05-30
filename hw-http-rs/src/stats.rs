@@ -19,7 +19,7 @@ impl Stats {
     }
 
     pub fn incr(&mut self, s: StatusCode) {
-        *(self.statuses.entry(s).or_insert(0)) += 1;
+        todo!("TODO: Part 4");
     }
 
     pub fn items(&self) -> Vec<(StatusCode, usize)> {
@@ -34,5 +34,5 @@ impl Stats {
 }
 
 pub async fn incr(s: &StatsPtr, sc: StatusCode) {
-    s.write().await.incr(sc);
+    todo!("TODO: Part 4");
 }

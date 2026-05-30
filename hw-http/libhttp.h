@@ -30,8 +30,6 @@ struct http_request {
 
 struct http_request* http_request_parse(int fd);
 
-void free_request(struct http_request*);
-
 /*
  * Functions for sending an HTTP response.
  */

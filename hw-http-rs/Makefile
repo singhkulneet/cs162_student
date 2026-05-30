@@ -1,10 +1,10 @@
 .PHONY: all build run
 
-all: build install
+all: build
 
 
 build:
-	cargo build
+	cargo build --release
 
 install:
 	cargo install --path .

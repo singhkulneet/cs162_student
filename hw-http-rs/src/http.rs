@@ -91,23 +91,11 @@ pub async fn end_headers<T>(s: &mut T) -> Result<()>
 where
     T: AsyncWriteExt + Unpin,
 {
-    s.write_all(b"\r\n").await?;
-    Ok(())
+    todo!("TODO: Part 1")
 }
 
 pub fn get_mime_type(path: &str) -> &'static str {
-    match file_extension(path) {
-        Some(extension) => match extension {
-            "html" | "htm" => "text/html",
-            "jpg" | "jpeg" => "image/jpeg",
-            "png" => "image/png",
-            "css" => "text/css",
-            "js" => "application/javascript",
-            "pdf" => "application/pdf",
-            _ => "text/plain",
-        },
-        None => "text/plain",
-    }
+    todo!("TODO: Part 1")
 }
 
 fn file_extension(path: &str) -> Option<&str> {

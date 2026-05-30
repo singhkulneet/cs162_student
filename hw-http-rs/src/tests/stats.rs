@@ -11,13 +11,6 @@ fn new_method_present() {
 }
 
 #[test]
-/// Check that `Stats` has an `incr` method.
-fn incr_method_present() {
-    let mut s = Stats::new();
-    s.incr(123);
-}
-
-#[test]
 /// Check that `Stats` can be debug printed.
 fn stats_debug() {
     let s = Stats::new();
