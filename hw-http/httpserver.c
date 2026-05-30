@@ -31,6 +31,12 @@ char* server_files_directory;
 char* server_proxy_hostname;
 int server_proxy_port;
 
+void send_res(int fd, int code) {
+  http_start_response(fd, code);
+  http_send_header(fd, "Content-Type", "text/html");
+  http_end_headers(fd);
+}
+
 /*
  * Serves the contents the file stored at `path` to the client socket `fd`.
  * It is the caller's reponsibility to ensure that the file stored at `path` exists.
@@ -39,31 +45,73 @@ void serve_file(int fd, char* path) {
 
   /* TODO: PART 2 */
   /* PART 2 BEGIN */
+  int ffd = open(path, O_RDONLY);
+  struct stat f_stat;
+  if (ffd == -1 || fstat(ffd, &f_stat) != 0) {
+    send_res(fd, 404);
+    return;
+  }
 
   http_start_response(fd, 200);
   http_send_header(fd, "Content-Type", http_get_mime_type(path));
-  http_send_header(fd, "Content-Length", "0"); // TODO: change this line too
+  char num_str[32];
+  snprintf(num_str, sizeof(num_str), "%ld", f_stat.st_size);
+  http_send_header(fd, "Content-Length", num_str); // TODO: change this line too
   http_end_headers(fd);
-
+  // Write the content of the file
+  ssize_t num;
+  uint8_t buf[1024];
+  while ((num = read(ffd, buf, 1024)) > 0) {
+    write(fd, buf, num);
+  }
   /* PART 2 END */
 }
 
 void serve_directory(int fd, char* path) {
-  http_start_response(fd, 200);
-  http_send_header(fd, "Content-Type", http_get_mime_type(".html"));
-  http_end_headers(fd);
-
   /* TODO: PART 3 */
   /* PART 3 BEGIN */
 
+  char index_path[2048];
+  http_format_index(index_path, path);
+  if (access(index_path, F_OK) == 0) {
+    serve_file(fd, index_path);
+    return;
+  }
+
   // TODO: Open the directory (Hint: opendir() may be useful here)
+  DIR *dir = opendir(path);
+  if (!dir) {
+    send_res(fd, 404);
+    return;
+  }
+
+  http_start_response(fd, 200);
+  http_send_header(fd, "Content-Type", http_get_mime_type(".html"));
+  http_end_headers(fd);
 
   /**
    * TODO: For each entry in the directory (Hint: look at the usage of readdir() ),
    * send a string containing a properly formatted HTML. (Hint: the http_format_href()
    * function in libhttp.c may be useful here)
    */
+  char* path2 = strdup(path);
+  if (path2[strlen(path2)-1] == '/') { // remove trailing backslash
+    path2[strlen(path2)-1] = '\0';
+  }
 
+  char href[4096];
+  struct dirent *dir_e;
+  while ((dir_e = readdir(dir)) != NULL) {
+    if (strcmp(dir_e->d_name, ".") == 0) {
+      continue;
+    }
+    http_format_href(href, path2, dir_e->d_name);
+    write(fd, href, strlen(href));
+  }
+
+  free(path2);
+  closedir(dir);
+  return;
   /* PART 3 END */
 }
 
@@ -85,17 +133,13 @@ void handle_files_request(int fd) {
   struct http_request* request = http_request_parse(fd);
 
   if (request == NULL || request->path[0] != '/') {
-    http_start_response(fd, 400);
-    http_send_header(fd, "Content-Type", "text/html");
-    http_end_headers(fd);
+    send_res(fd, 404);
     close(fd);
     return;
   }
 
   if (strstr(request->path, "..") != NULL) {
-    http_start_response(fd, 403);
-    http_send_header(fd, "Content-Type", "text/html");
-    http_end_headers(fd);
+    send_res(fd, 403);
     close(fd);
     return;
   }
@@ -117,13 +161,45 @@ void handle_files_request(int fd) {
    */
 
   /* PART 2 & 3 BEGIN */
+  struct stat path_attr;
+  if (stat(path, &path_attr) != 0) {
+    send_res(fd, 404);
+    close(fd);
+    return;
+  }
+
+  if (S_ISREG(path_attr.st_mode)) { // regular file
+    serve_file(fd, path);
+  }
+
+  if (S_ISDIR(path_attr.st_mode)) { // directory
+    serve_directory(fd, path);
+  }
 
   /* PART 2 & 3 END */
-
+  free(request);
+  free(path);
   close(fd);
   return;
 }
 
+struct forward_args {
+  int fd_read;
+  int fd_write;
+  pthread_t* pthread;
+};
+
+void* forward(void* args) {
+  struct forward_args* forward_args = (struct forward_args*)args;
+  char buffer[2048];
+  ssize_t nbytes = 0;
+  // read() is required to be cancellation points
+  while ((nbytes = read(forward_args->fd_read, buffer, sizeof(buffer))) > 0) {
+    write(forward_args->fd_write, buffer, nbytes);
+  }
+  pthread_cancel(*(forward_args->pthread));
+  pthread_exit(NULL);
+}
 /*
  * Opens a connection to the proxy target (hostname=server_proxy_hostname and
  * port=server_proxy_port) and relays traffic to/from the stream fd and the
@@ -187,7 +263,16 @@ void handle_proxy_request(int fd) {
 
   /* TODO: PART 4 */
   /* PART 4 BEGIN */
-
+  pthread_t client2server;
+  pthread_t server2proxy;
+  struct forward_args client2server_args = {fd, target_fd, &server2proxy};
+  struct forward_args server2proxy_args = {target_fd, fd, &client2server};
+  pthread_create(&client2server, NULL, forward, &client2server_args);
+  pthread_create(&server2proxy, NULL, forward, &server2proxy_args);
+  pthread_join(server2proxy, NULL);
+  pthread_join(client2server, NULL);
+  close(target_fd);
+  close(fd);
   /* PART 4 END */
 }
 
@@ -261,10 +346,17 @@ void serve_forever(int* socket_number, void (*request_handler)(int)) {
    * An appropriate size of the backlog is 1024, though you may
    * play around with this value during performance testing.
    */
-  // bind(*socket_number, )
 
   /* PART 1 BEGIN */
+  if (bind(*socket_number, &server_address, sizeof(server_address)) != 0) {
+    perror("Failed to bind to server address");
+    exit(errno);
+  }
 
+  if (listen(*socket_number, 1024) != 0) {
+    perror("Failed to listen on server address");
+    exit(errno);
+  }
   /* PART 1 END */
   printf("Listening on port %d...\n", server_port);
 
